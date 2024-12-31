@@ -21,6 +21,9 @@ Instruction format types
 
 ![image](https://github.com/user-attachments/assets/8aa173d4-d4f0-4d32-b5ed-3aa4096f882e)
 
+### Notes
+`mv a, b` compiles to `addi a, b, 0`
+`jr ra` compiles to `lui`
 
 ## M Extention (Multiplication & Division)
 ![image](https://github.com/user-attachments/assets/4febe4bf-791b-43ee-bfb1-1cf0efbc8810)

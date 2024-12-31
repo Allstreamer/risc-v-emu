@@ -51,73 +51,104 @@ impl RV64I {
     }
 
     pub fn execute(&mut self, instruction: u32) {
+        println!("{:032b}", instruction);
         let op_code = get_bits(instruction, 0, 6);
-        let mut rd = None;
-        let mut funct3 = None;
-        let mut rs1 = None;
-        let mut rs2 = None;
-        let mut funct7 = None;
-        let mut imm_11_0 = None;
+
+        let rd = get_bits(instruction, 7, 11);
+        let rs1 = get_bits(instruction, 15, 19);
+        let rs2 = get_bits(instruction, 20, 24);
+
+        let funct3 = get_bits(instruction, 12, 14);
+        let funct7 = get_bits(instruction, 25, 31);
+
+        let imm_11_0 = get_bits(instruction, 20, 31);
+
+        // TODO: sw, li, lui
 
         match op_code {
             // I-type (see 2.2 of ISA)
-            19 => {
-                rd = Some(get_bits(instruction, 7, 11));
-                funct3 = Some(get_bits(instruction, 12, 14));
-                rs1 = Some(get_bits(instruction, 15, 19));
-                imm_11_0 = Some(get_bits(instruction, 20, 31));
-
+            0b0010011 => {
                 println!(
                     "{:012b} {:05b} {:03b} {:05b} {:07b}",
-                    imm_11_0.unwrap().green(),
-                    rs1.unwrap().bright_blue(),
-                    funct3.unwrap().yellow(),
-                    rd.unwrap().red(),
+                    imm_11_0.green(),
+                    rs1.bright_blue(),
+                    funct3.yellow(),
+                    rd.red(),
                     op_code.yellow()
                 );
+                self.handle_i_type(op_code, rd, funct3, rs1, imm_11_0);
             }
             // R-Type (see 2.2 of ISA)
-            51 => {
-                rd = Some(get_bits(instruction, 7, 11));
-                funct3 = Some(get_bits(instruction, 12, 14));
-                rs1 = Some(get_bits(instruction, 15, 19));
-                rs2 = Some(get_bits(instruction, 20, 24));
-                funct7 = Some(get_bits(instruction, 25, 31));
-
+            0b0110011 => {
                 println!(
                     "{:07b} {:05b} {:05b} {:03b} {:05b} {:07b}",
-                    funct7.unwrap().yellow(),
-                    rs2.unwrap().bright_blue(),
-                    rs1.unwrap().bright_blue(),
-                    funct3.unwrap().yellow(),
-                    rd.unwrap().red(),
+                    funct7.yellow(),
+                    rs2.bright_blue(),
+                    rs1.bright_blue(),
+                    funct3.yellow(),
+                    rd.red(),
                     op_code.yellow()
                 );
+                self.handle_r_type(op_code, rd, funct3, rs1, rs2, funct7);
+            }
+            // S-Type (see 2.2 of ISA)
+            0b0100011 => {
+                let imm_4_0 = get_bits(instruction, 7, 11);
+                let imm_11_5 = get_bits(instruction, 25, 31);
+
+                // self.handle_s_type(op_code, funct3, rs1, rs2, imm);
+            }
+            // B-Type (see 2.2 of ISA)
+            0b1100011 => {
+                let imm_11 = get_bits(instruction, 7, 7);
+                let imm_1_4 = get_bits(instruction, 8, 11);
+                let imm_12 = get_bits(instruction, 31, 31);
+                let imm_10_5 = get_bits(instruction, 25, 30);
+                // self.handle_b_type(op_code, funct3, rs1, rs2, imm);
             }
             _ => {
                 todo!("Failed to interpret opcode: {}", op_code);
             }
         }
 
-        match (op_code, funct3, funct7, rs1, rs2, rd, imm_11_0) {
-            // ADDI
-            (19, Some(0), _, Some(rs1_in), _, Some(rd_in), Some(imm_11_0)) => {
-                self.general_registers[rd_in as usize] =
-                    self.general_registers[rs1_in as usize].wrapping_add(imm_11_0 as u64);
-            }
-            (51, Some(0), Some(0), Some(rs1_in), Some(rs2_in), Some(rd_in), _) => {
-                self.general_registers[rd_in as usize] = self.general_registers[rs1_in as usize]
-                    .wrapping_add(self.general_registers[rs2_in as usize]);
-            }
-            v => {
-                panic!("{:?}", v);
-            }
-        }
         println!(
             "PC:{} Reg: {:?}",
             self.program_counter, self.general_registers
         );
     }
+
+    fn handle_r_type(
+        &mut self,
+        opcode: u32,
+        rd: u32,
+        funct3: u32,
+        rs1: u32,
+        rs2: u32,
+        funct7: u32,
+    ) {
+        match (funct3, funct7) {
+            (0, 0) => {
+                self.general_registers[rd as usize] = self.general_registers[rs1 as usize]
+                    .wrapping_add(self.general_registers[rs2 as usize]);
+            }
+            _ => {
+                todo!()
+            }
+        }
+    }
+    fn handle_i_type(&mut self, opcode: u32, rd: u32, funct3: u32, rs1: u32, imm: u32) {
+        match funct3 {
+            0 => {
+                self.general_registers[rd as usize] =
+                    self.general_registers[rs1 as usize].wrapping_add(imm as u64);
+            }
+            _ => {
+                todo!()
+            }
+        }
+    }
+    fn handle_s_type(&mut self, opcode: u32, funct3: u32, rs1: u32, rs2: u32, imm: u32) {}
+    fn handle_b_type(&mut self, opcode: u32, funct3: u32, rs1: u32, rs2: u32, imm: u32) {}
 }
 
 fn get_bits(value: u32, start: u32, end: u32) -> u32 {
