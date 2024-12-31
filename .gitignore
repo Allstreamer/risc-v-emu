@@ -1,1 +1,4 @@
 /target
+/riscv-gnu-toolchain
+test
+test.bin
