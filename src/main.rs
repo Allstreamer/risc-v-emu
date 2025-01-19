@@ -1,7 +1,8 @@
 use owo_colors::OwoColorize;
-use std::{fs, usize};
+use std::{fs, u64, usize};
 
-const MAX_MEMORY: u64 = 1024 * 1024 * 128;
+mod dram;
+use dram::{Bus, Memory, DRAM_BASE, MAX_MEMORY};
 
 #[derive(Debug, Clone, Default)]
 struct RV64I {
@@ -11,46 +12,59 @@ struct RV64I {
     general_registers: [u64; 32],
     /// PC
     program_counter: u64,
-    program: Vec<u8>,
+    bus: Bus,
+    stalled: bool,
 }
 
 impl RV64I {
     pub fn new(program: Vec<u8>) -> Self {
         let mut registers = [0; 32];
         registers[2] = MAX_MEMORY;
+        let memory = Memory::new(program);
+        let bus = Bus::new(memory);
 
         Self {
             general_registers: registers,
-            program,
+            bus,
+            stalled: false,
+            program_counter: DRAM_BASE,
             ..Default::default()
         }
     }
 
     pub fn step(&mut self) {
-        let instr = self.fetch();
+        let instr = match self.fetch() {
+            Ok(0) => {
+                self.stalled = true;
+                dbg!(self.stalled);
+                return;
+            }
+            Ok(v) => v,
+            _ => {
+                self.stalled = true;
+                dbg!(self.stalled);
+                return;
+            }
+        };
 
         self.program_counter += 4;
 
         self.general_registers[0] = 0;
-        self.execute(instr);
-    }
-
-    pub fn fetch(&self) -> u32 {
-        let a = [
-            self.program[self.program_counter as usize],
-            self.program[self.program_counter as usize + 1],
-            self.program[self.program_counter as usize + 2],
-            self.program[self.program_counter as usize + 3],
-        ];
-        let (prefix, result, suffix) = unsafe { a.align_to::<u32>() };
-
-        if !prefix.is_empty() || !suffix.is_empty() {
-            panic!("Vec<u8> is not properly aligned for u32");
+        if let Err(_) = self.execute(instr) {
+            self.stalled = true;
+            dbg!(self.stalled);
+            return;
         }
-        result[0]
     }
 
-    pub fn execute(&mut self, instruction: u32) {
+    pub fn fetch(&self) -> Result<u32, ()> {
+        match self.bus.load(self.program_counter, 32) {
+            Ok(v) => Ok(v as u32),
+            Err(v) => Err(v),
+        }
+    }
+
+    pub fn execute(&mut self, instruction: u32) -> Result<(), ()> {
         println!("{:032b}", instruction);
         let op_code = get_bits(instruction, 0, 6);
 
@@ -63,20 +77,23 @@ impl RV64I {
 
         let imm_11_0 = get_bits(instruction, 20, 31);
 
-        // TODO: sw, li, lui
-
         match op_code {
             // I-type (see 2.2 of ISA)
-            0b0010011 => {
+            0b0010011 | 0b0000011 => {
+                let imm = if imm_11_0 >> 11 == 1 {
+                    imm_11_0 as u64 | (u64::MAX << 11)
+                } else {
+                    imm_11_0 as u64
+                };
                 println!(
-                    "{:012b} {:05b} {:03b} {:05b} {:07b}",
-                    imm_11_0.green(),
+                    "{:032b} {:05b} {:03b} {:05b} {:07b}",
+                    imm.green(),
                     rs1.bright_blue(),
                     funct3.yellow(),
                     rd.red(),
                     op_code.yellow()
                 );
-                self.handle_i_type(op_code, rd, funct3, rs1, imm_11_0);
+                self.handle_i_type(op_code, rd, funct3, rs1, imm);
             }
             // R-Type (see 2.2 of ISA)
             0b0110011 => {
@@ -96,7 +113,15 @@ impl RV64I {
                 let imm_4_0 = get_bits(instruction, 7, 11);
                 let imm_11_5 = get_bits(instruction, 25, 31);
 
-                // self.handle_s_type(op_code, funct3, rs1, rs2, imm);
+                let imm = imm_11_5 << 5 | imm_4_0;
+
+                let imm = if imm >> 11 == 1 {
+                    imm as u64 | (u64::MAX << 11)
+                } else {
+                    imm as u64
+                };
+
+                self.handle_s_type(op_code, funct3, rs1, rs2, imm)?;
             }
             // B-Type (see 2.2 of ISA)
             0b1100011 => {
@@ -104,7 +129,18 @@ impl RV64I {
                 let imm_1_4 = get_bits(instruction, 8, 11);
                 let imm_12 = get_bits(instruction, 31, 31);
                 let imm_10_5 = get_bits(instruction, 25, 30);
-                // self.handle_b_type(op_code, funct3, rs1, rs2, imm);
+
+                // TODO: Verify
+                let imm = imm_1_4 << 1 | imm_10_5 << 5 | imm_11 << 11 | imm_12 << 12;
+                let imm = if imm >> 12 == 1 {
+                    imm as u64 | (u64::MAX << 12)
+                } else {
+                    imm as u64
+                };
+
+                todo!("Validate B-type Immidiate Value");
+
+                self.handle_b_type(op_code, funct3, rs1, rs2, imm);
             }
             _ => {
                 todo!("Failed to interpret opcode: {}", op_code);
@@ -115,6 +151,7 @@ impl RV64I {
             "PC:{} Reg: {:?}",
             self.program_counter, self.general_registers
         );
+        Ok(())
     }
 
     fn handle_r_type(
@@ -126,29 +163,137 @@ impl RV64I {
         rs2: u32,
         funct7: u32,
     ) {
-        match (funct3, funct7) {
-            (0, 0) => {
+        match (opcode, funct3, funct7) {
+            (0b0110011, 0, 0) => {
                 self.general_registers[rd as usize] = self.general_registers[rs1 as usize]
                     .wrapping_add(self.general_registers[rs2 as usize]);
             }
             _ => {
-                todo!()
+                todo!("OP:{:08b} F3:{:04b}", opcode, funct3);
             }
         }
     }
-    fn handle_i_type(&mut self, opcode: u32, rd: u32, funct3: u32, rs1: u32, imm: u32) {
-        match funct3 {
-            0 => {
+    fn handle_i_type(&mut self, opcode: u32, rd: u32, funct3: u32, rs1: u32, imm: u64) {
+        match (opcode, funct3) {
+            (0b0000011, 0b000) => {
+                // lb
+                let addr = self.general_registers[rs1 as usize].wrapping_add(imm);
+                let val = self
+                    .bus
+                    .load(addr, 8)
+                    .expect("Update Code path for I instr");
+                self.general_registers[rd as usize] = val as i8 as i64 as u64;
+            }
+            (0b0000011, 0b001) => {
+                // lh
+                let addr = self.general_registers[rs1 as usize].wrapping_add(imm);
+                let val = self
+                    .bus
+                    .load(addr, 16)
+                    .expect("Update Code path for I instr");
+                self.general_registers[rd as usize] = val as i16 as i64 as u64;
+            }
+            (0b0000011, 0b010) => {
+                // lw
+                let addr = self.general_registers[rs1 as usize].wrapping_add(imm);
+                let val = self
+                    .bus
+                    .load(addr, 32)
+                    .expect("Update Code path for I instr");
+                self.general_registers[rd as usize] = val as i32 as i64 as u64;
+            }
+            (0b0000011, 0b011) => {
+                // ld
+                let addr = self.general_registers[rs1 as usize].wrapping_add(imm);
+                let val = self
+                    .bus
+                    .load(addr, 64)
+                    .expect("Update Code path for I instr");
+                self.general_registers[rd as usize] = val;
+            }
+            (0b0000011, 0b100) => {
+                // lbu
+                let addr = self.general_registers[rs1 as usize].wrapping_add(imm);
+                let val = self
+                    .bus
+                    .load(addr, 8)
+                    .expect("Update Code path for I instr");
+                self.general_registers[rd as usize] = val;
+            }
+            (0b0000011, 0b101) => {
+                // lhu
+                let addr = self.general_registers[rs1 as usize].wrapping_add(imm);
+                let val = self
+                    .bus
+                    .load(addr, 16)
+                    .expect("Update Code path for I instr");
+                self.general_registers[rd as usize] = val;
+            }
+            (0b0000011, 0b110) => {
+                // lhu
+                let addr = self.general_registers[rs1 as usize].wrapping_add(imm);
+                let val = self
+                    .bus
+                    .load(addr, 32)
+                    .expect("Update Code path for I instr");
+                self.general_registers[rd as usize] = val;
+            }
+            (0b0010011, 0b000) => {
+                // ADDI (also noop when rs1, rd, imm are zero)
                 self.general_registers[rd as usize] =
-                    self.general_registers[rs1 as usize].wrapping_add(imm as u64);
+                    self.general_registers[rs1 as usize].wrapping_add(imm);
             }
             _ => {
-                todo!()
+                todo!("OP:{:08b} F3:{:04b}", opcode, funct3);
             }
         }
     }
-    fn handle_s_type(&mut self, opcode: u32, funct3: u32, rs1: u32, rs2: u32, imm: u32) {}
-    fn handle_b_type(&mut self, opcode: u32, funct3: u32, rs1: u32, rs2: u32, imm: u32) {}
+    fn handle_s_type(
+        &mut self,
+        opcode: u32,
+        funct3: u32,
+        rs1: u32,
+        rs2: u32,
+        imm: u64,
+    ) -> Result<(), ()> {
+        match (opcode, funct3) {
+            (0b0100011, 0b000) => {
+                // sb
+                let addr = self.general_registers[rs1 as usize].wrapping_add(imm);
+                self.bus
+                    .store(addr, 8, self.general_registers[rs2 as usize])?;
+            }
+            (0b0100011, 0b001) => {
+                // sh
+                let addr = self.general_registers[rs1 as usize].wrapping_add(imm);
+                self.bus
+                    .store(addr, 16, self.general_registers[rs2 as usize])?;
+            }
+            (0b0100011, 0b010) => {
+                // sw
+                let addr = self.general_registers[rs1 as usize].wrapping_add(imm);
+                self.bus
+                    .store(addr, 32, self.general_registers[rs2 as usize])?;
+            }
+            (0b0100011, 0b011) => {
+                // sd
+                let addr = self.general_registers[rs1 as usize].wrapping_add(imm);
+                self.bus
+                    .store(addr, 64, self.general_registers[rs2 as usize])?;
+            }
+            _ => {
+                todo!("OP:{:08b} F3:{:04b}", opcode, funct3);
+            }
+        }
+        Ok(())
+    }
+    fn handle_b_type(&mut self, opcode: u32, funct3: u32, rs1: u32, rs2: u32, imm: u64) {
+        match (opcode, funct3) {
+            _ => {
+                todo!("OP:{:08b} F3:{:04b}", opcode, funct3);
+            }
+        }
+    }
 }
 
 fn get_bits(value: u32, start: u32, end: u32) -> u32 {
@@ -163,7 +308,7 @@ fn main() {
     let mut cpu = RV64I::new(file);
 
     loop {
-        if cpu.program_counter as usize >= cpu.program.len() {
+        if cpu.stalled {
             break;
         }
         cpu.step();
