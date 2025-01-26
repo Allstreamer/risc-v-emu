@@ -16,6 +16,10 @@ struct RV64I {
     stalled: bool,
 }
 
+pub fn extract_sign_extended_immediate(inst: u32) -> i64 {
+    (inst & 0xfff00000) as i32 as i64 >> 20
+}
+
 impl RV64I {
     pub fn new(program: Vec<u8>) -> Self {
         let mut registers = [0; 32];
@@ -80,11 +84,8 @@ impl RV64I {
         match op_code {
             // I-type (see 2.2 of ISA)
             0b0010011 | 0b0000011 => {
-                let imm = if imm_11_0 >> 11 == 1 {
-                    imm_11_0 as u64 | (u64::MAX << 11)
-                } else {
-                    imm_11_0 as u64
-                };
+                println!("I-Type");
+                let imm = extract_sign_extended_immediate(instruction);
                 println!(
                     "{:032b} {:05b} {:03b} {:05b} {:07b}",
                     imm.green(),
@@ -97,6 +98,7 @@ impl RV64I {
             }
             // R-Type (see 2.2 of ISA)
             0b0110011 => {
+                println!("R-Type");
                 println!(
                     "{:07b} {:05b} {:05b} {:03b} {:05b} {:07b}",
                     funct7.yellow(),
@@ -110,6 +112,7 @@ impl RV64I {
             }
             // S-Type (see 2.2 of ISA)
             0b0100011 => {
+                println!("S-Type");
                 let imm_4_0 = get_bits(instruction, 7, 11);
                 let imm_11_5 = get_bits(instruction, 25, 31);
 
@@ -121,10 +124,19 @@ impl RV64I {
                     imm as u64
                 };
 
+                println!(
+                    "{:b} {:05b} {:05b} {:03b} {:07b}",
+                    imm.yellow(),
+                    rs2.bright_blue(),
+                    rs1.bright_blue(),
+                    funct3.yellow(),
+                    op_code.yellow()
+                );
                 self.handle_s_type(op_code, funct3, rs1, rs2, imm)?;
             }
             // B-Type (see 2.2 of ISA)
             0b1100011 => {
+                println!("B-Type");
                 let imm_11 = get_bits(instruction, 7, 7);
                 let imm_1_4 = get_bits(instruction, 8, 11);
                 let imm_12 = get_bits(instruction, 31, 31);
